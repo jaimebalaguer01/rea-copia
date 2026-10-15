@@ -254,6 +254,17 @@ export class HopperClient {
         ],
       };
     }
+    // An outstanding readiness wait is not idle work: the bridge has not
+    // completed its authenticated handshake, so surface it as starting rather
+    // than reporting an idle provider with no activity.
+    if (this.#startPromise !== undefined && !this.isReady())
+      return {
+        state: "starting",
+        stage: "launch",
+        retryAction: "wait",
+        exitCode: null,
+        requests: [],
+      };
     return {
       state: "idle",
       stage: null,
