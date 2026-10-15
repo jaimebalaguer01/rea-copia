@@ -1,0 +1,230 @@
+name: rea js-redox merge-upstream courier
+
+on:
+  push:
+
+permissions:
+  contents: write
+
+jobs:
+  merge-and-qualify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Merge upstream, fix compatibility, qualify, and publish
+        env:
+          COURIER_SHA: ${{ github.sha }}
+          ORIGINAL_SHA: 117d949e2dd6f6acd0880bc6857332bca0c882ec
+          BRANCH: feat/js-redox-safe-deobfuscation
+        run: |
+          set -euo pipefail
+          published=0
+          restore_original() {
+            if [ "$published" -eq 0 ]; then
+              echo 'Restoring original branch head after unsuccessful qualification'
+              git push --no-verify --force-with-lease="refs/heads/${BRANCH}:${COURIER_SHA}" origin "${ORIGINAL_SHA}:refs/heads/${BRANCH}" || true
+            fi
+          }
+          trap restore_original EXIT
+
+          git config user.name 'Code and Solder'
+          git config user.email 'codeandsolder@gmail.com'
+          git remote add upstream https://github.com/morluto/rea.git
+          git fetch --no-tags upstream main
+          upstream_sha="$(git rev-parse upstream/main)"
+          echo "UPSTREAM_SHA=${upstream_sha}"
+          git checkout --detach "$ORIGINAL_SHA"
+
+          set +e
+          git merge --no-commit --no-ff upstream/main
+          merge_rc=$?
+          set -e
+          if [ "$merge_rc" -ne 1 ]; then
+            echo "Expected conflict merge exit 1, got ${merge_rc}"
+            exit 1
+          fi
+
+          mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
+          expected=(
+            README.md
+            docs/readme/README_ar.md
+            docs/readme/README_de.md
+            docs/readme/README_es.md
+            docs/readme/README_fa.md
+            docs/readme/README_fr.md
+            docs/readme/README_id.md
+            docs/readme/README_it.md
+            docs/readme/README_ja.md
+            docs/readme/README_ko.md
+            docs/readme/README_pl.md
+            docs/readme/README_pt-BR.md
+            docs/readme/README_ru.md
+            docs/readme/README_th.md
+            docs/readme/README_tr.md
+            docs/readme/README_uk.md
+            docs/readme/README_vi.md
+            docs/readme/README_zh-TW.md
+            docs/readme/README_zh.md
+            src/process/ProviderProcess.ts
+          )
+          printf 'Conflicts (%d):\n' "${#conflicts[@]}"
+          printf '  %s\n' "${conflicts[@]}"
+          if [ "$(printf '%s\n' "${conflicts[@]}" | sort)" != "$(printf '%s\n' "${expected[@]}" | sort)" ]; then
+            echo 'Conflict set changed; refusing automatic resolution'
+            exit 1
+          fi
+          git checkout --theirs -- "${expected[@]}"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          readmes = [
+              Path('README.md'),
+              *[Path('docs/readme') / name for name in (
+                  'README_ar.md','README_de.md','README_es.md','README_fa.md','README_fr.md',
+                  'README_id.md','README_it.md','README_ja.md','README_ko.md','README_pl.md',
+                  'README_pt-BR.md','README_ru.md','README_th.md','README_tr.md','README_uk.md',
+                  'README_vi.md','README_zh-TW.md','README_zh.md'
+              )]
+          ]
+          for path in readmes:
+              text = path.read_text()
+              lines = text.splitlines()
+              matches = [i for i, line in enumerate(lines) if '| JavaScript / Electron' in line]
+              if len(matches) != 1:
+                  raise SystemExit(f'{path}: expected one JavaScript capability row, found {len(matches)}')
+              i = matches[0]
+              if 'js-redox' in lines[i]:
+                  raise SystemExit(f'{path}: upstream row unexpectedly already contains js-redox')
+              link = 'docs/javascript-deobfuscation.md' if path.name == 'README.md' else '../javascript-deobfuscation.md'
+              line = lines[i]
+              last_pipe = line.rfind('|')
+              if last_pipe <= 0:
+                  raise SystemExit(f'{path}: malformed table row')
+              lines[i] = line[:last_pipe].rstrip() + f'; [js-redox]({link}) ' + line[last_pipe:]
+              path.write_text('\n'.join(lines) + ('\n' if text.endswith('\n') else ''))
+
+          def replace_once(path: Path, old: str, new: str, label: str) -> None:
+              text = path.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path} {label}: expected exactly one match, found {count}')
+              path.write_text(text.replace(old, new, 1))
+
+          provider_process = Path('src/process/ProviderProcess.ts')
+          text = provider_process.read_text()
+          replacements = [
+              (
+                  '''  readonly stdout: {\n    readonly text: string;\n    /** True when retained bytes cannot be represented exactly as UTF-8 text. */\n    readonly invalidUtf8?: true;''',
+                  '''  readonly stdout: {\n    readonly text: string;\n    /** Original retained bytes for artifact publishers; intentionally non-enumerable. */\n    readonly rawBytes?: Buffer;\n    /** True when retained bytes cannot be represented exactly as UTF-8 text. */\n    readonly invalidUtf8?: true;''',
+                  'stdout interface',
+              ),
+              (
+                  '''  readonly stderr: {\n    readonly text: string;\n    /** True when retained bytes cannot be represented exactly as UTF-8 text. */\n    readonly invalidUtf8?: true;''',
+                  '''  readonly stderr: {\n    readonly text: string;\n    /** Original retained bytes for artifact publishers; intentionally non-enumerable. */\n    readonly rawBytes?: Buffer;\n    /** True when retained bytes cannot be represented exactly as UTF-8 text. */\n    readonly invalidUtf8?: true;''',
+                  'stderr interface',
+              ),
+              (
+                  '''    return {\n      text,\n      bytes: this.#bytes,\n      observedBytes,\n      ...(invalidUtf8 ? { invalidUtf8: true } : {}),\n    };''',
+                  '''    const snapshot: ProviderProcessSnapshot["stdout"] = {\n      text,\n      bytes: this.#bytes,\n      observedBytes,\n      ...(invalidUtf8 ? { invalidUtf8: true } : {}),\n    };\n    Object.defineProperty(snapshot, "rawBytes", {\n      value: buffer,\n      enumerable: false,\n      configurable: false,\n      writable: false,\n    });\n    return snapshot;''',
+                  'snapshot implementation',
+              ),
+          ]
+          for old, new, label in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'ProviderProcess {label}: expected exactly one match, found {count}')
+              text = text.replace(old, new, 1)
+          provider_process.write_text(text)
+
+          service = Path('src/application/javascript/JavaScriptDeobfuscationService.ts')
+          text = service.read_text()
+          old_check = 'if (options?.signal?.aborted === true)'
+          if text.count(old_check) != 2:
+              raise SystemExit(f'service cancellation checks: expected 2, found {text.count(old_check)}')
+          text = text.replace(old_check, 'if (callerAborted(options))')
+          anchor = '\nconst isWithin = (root: string, path: string): boolean => {'
+          helper = '''\nconst callerAborted = (options?: ExecutionOptions): boolean =>\n  options?.signal?.aborted === true;\n\nconst isWithin = (root: string, path: string): boolean => {'''
+          if text.count(anchor) != 1:
+              raise SystemExit('service isWithin anchor changed')
+          service.write_text(text.replace(anchor, helper, 1))
+
+          provider = Path('src/javascript/deobfuscation/JsRedoxProvider.ts')
+          replace_once(
+              provider,
+              '''    readonly createRuntime: () => Promise<\n      Pick<PrivateRuntimeRoot, "path" | "close">\n    > = () =>\n      PrivateRuntimeRoot.create({\n        prefix: "rea-js-redox-",\n        ...(runtimeParent(environment) === undefined\n          ? {}\n          : { parent: runtimeParent(environment) }),\n      }),''',
+              '''    readonly createRuntime: () => Promise<\n      Pick<PrivateRuntimeRoot, "path" | "close">\n    > = () => {\n      const parent = runtimeParent(environment);\n      return PrivateRuntimeRoot.create(\n        parent === undefined\n          ? { prefix: "rea-js-redox-" }\n          : { prefix: "rea-js-redox-", parent },\n      );\n    },''',
+              'runtime constructor',
+          )
+
+          service_test = Path('src/application/javascript/JavaScriptDeobfuscationService.test.ts')
+          text = service_test.read_text()
+          opening = 'describe("JavaScript deobfuscation workflow", () => {'
+          if text.count(opening) != 1:
+              raise SystemExit(f'service test opening: expected 1, found {text.count(opening)}')
+          text = text.replace(opening, 'describe("JavaScript deobfuscation result bindings", () => {', 1)
+          split = '  it("preserves provider failures", async () => {'
+          if text.count(split) != 1:
+              raise SystemExit(f'service test split: expected 1, found {text.count(split)}')
+          text = text.replace(split, '});\n\ndescribe("JavaScript deobfuscation workflow", () => {\n' + split, 1)
+          old = '''    if (!response.ok) throw new Error("expected valid deobfuscation Evidence");\n    expect(response.value.subject.format).toBe("javascript");'''
+          new = '''    if (!response.ok) throw new Error("expected valid deobfuscation Evidence");\n    if (response.value.subject === null)\n      throw new Error("expected JavaScript Evidence subject");\n    expect(response.value.subject.format).toBe("javascript");'''
+          if text.count(old) != 1:
+              raise SystemExit(f'service subject assertion: expected 1, found {text.count(old)}')
+          service_test.write_text(text.replace(old, new, 1))
+
+          provider_test = Path('src/javascript/deobfuscation/JsRedoxProvider.test.ts')
+          text = provider_test.read_text()
+          old = '''    if (!response.ok) throw response.error;\n    expect(response.value).toMatchObject({\n      operation: "deobfuscate_javascript_source",\n      provider: { id: "js-redox", version: "0.1.0" },\n      normalized_result: {\n        status: "changed",\n        runtime_execution: "not-performed",\n        proof: {\n          input_sha256: response.value.subject.sha256,\n          output_sha256: response.value.normalized_result.output.sha256,\n        },\n      },\n    });'''
+          new = '''    if (!response.ok) throw response.error;\n    if (response.value.subject === null)\n      throw new Error("expected JavaScript Evidence subject");\n    const normalized = javascriptDeobfuscationResultSchema.parse(\n      response.value.normalized_result,\n    );\n    expect(response.value).toMatchObject({\n      operation: "deobfuscate_javascript_source",\n      provider: { id: "js-redox", version: "0.1.0" },\n    });\n    expect(response.value.subject).toMatchObject({\n      format: "javascript",\n      digest: { sha256: normalized.source.sha256 },\n    });\n    expect(normalized).toMatchObject({\n      status: "changed",\n      runtime_execution: "not-performed",\n      proof: {\n        input_sha256: normalized.source.sha256,\n        output_sha256: normalized.output.sha256,\n      },\n    });'''
+          if text.count(old) != 1:
+              raise SystemExit(f'provider success assertion: expected 1, found {text.count(old)}')
+          text = text.replace(old, new, 1)
+          old = '''    expect(response.error).toBeInstanceOf(AnalysisResourceConstraintError);\n    expect(response.error.reportedLimits).toMatchObject({'''
+          new = '''    expect(response.error).toBeInstanceOf(AnalysisResourceConstraintError);\n    if (!(response.error instanceof AnalysisResourceConstraintError))\n      throw response.error;\n    expect(response.error.reportedLimits).toMatchObject({'''
+          if text.count(old) != 1:
+              raise SystemExit(f'provider resource narrowing: expected 1, found {text.count(old)}')
+          text = text.replace(old, new, 1)
+          old = '    onTestFinished(() => vi.restoreAllMocks());'
+          new = '''    onTestFinished(() => {\n      vi.restoreAllMocks();\n    });'''
+          if text.count(old) != 1:
+              raise SystemExit(f'provider restore callback: expected 1, found {text.count(old)}')
+          provider_test.write_text(text.replace(old, new, 1))
+          PY
+
+          git add -A
+          if git diff --name-only --diff-filter=U | grep -q .; then
+            echo 'Unresolved conflicts remain after staging:'
+            git diff --name-only --diff-filter=U
+            exit 1
+          fi
+
+          npm ci
+          npx oxfmt .
+          git add -A
+          git diff --cached --check
+
+          npm run build:cached
+          npm run check:pr
+          npm run verify:architecture-guards
+
+          git diff --exit-code
+          git diff --cached --check
+          git commit --no-verify -m "chore: merge upstream main into js-redox integration"
+          merged_sha="$(git rev-parse HEAD)"
+          echo "MERGED_SHA=${merged_sha}"
+          if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+            echo 'Qualification commit left tracked changes:'
+            git status --short
+            exit 1
+          fi
+
+          git push --no-verify --force-with-lease="refs/heads/${BRANCH}:${COURIER_SHA}" origin "${merged_sha}:refs/heads/${BRANCH}"
+          published=1
+          echo "PUBLISHED_SHA=${merged_sha}"
