@@ -421,6 +421,33 @@ export const functionDossierSchema = z
     ),
     native_api: nativeApiBoundarySchema.nullable(),
     native_value_flow: nativeValueFlowSchema.nullable(),
+    decompiler_completeness: z
+      .object({
+        removed_blocks: z.array(
+          z
+            .object({
+              start: z.string(),
+              end: z
+                .string()
+                .nullable()
+                .describe(
+                  "Exclusive end of the listing basic block that contains start; null when the listing has no block there.",
+                ),
+              reason: z.enum(["unreachable"]),
+              assembly: z
+                .array(z.string())
+                .describe(
+                  "Listing instructions in [start, end); empty when end is null.",
+                ),
+            })
+            .strict(),
+        ),
+      })
+      .strict()
+      .exactOptional()
+      .describe(
+        "Blocks the decompiler removed from the pseudocode. Absent when the provider produced no pseudocode or does not report removals; an empty removed_blocks means none were reported.",
+      ),
     facet_availability: z
       .object({
         pseudocode: facetAvailabilitySchema.exactOptional(),

@@ -81,6 +81,7 @@ const nativeRows = (
     referenced_names: dossier.referenced_names,
     swift_string_literals: dossier.swift_string_literals,
     swift_string_literal_omissions: dossier.swift_string_literal_omissions,
+    decompiler_removed_blocks: dossier.decompiler_completeness?.removed_blocks,
     value_flow_operations: flow?.operations,
     value_flow_def_use: flow?.def_use,
     value_flow_effects: flow?.effects,
@@ -172,6 +173,12 @@ export const projectNativeFunctionView = (
   }
   if (view.facet === "pseudocode") {
     const page = analysisTextPage(dossier.pseudocode, view.offset, view.limit);
+    const removed = dossier.decompiler_completeness?.removed_blocks ?? [];
+    if (removed.length > 0)
+      common.unknowns = uniqueSorted([
+        ...common.unknowns,
+        `pseudocode omits ${String(removed.length)} block(s) the decompiler removed as unreachable; see decompiler_removed_blocks`,
+      ]);
     return page.ok
       ? ok({ kind: "native", view, ...page.value, ...common })
       : page;

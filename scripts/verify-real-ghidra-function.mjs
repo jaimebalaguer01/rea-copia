@@ -675,6 +675,68 @@ export async function verifyRelativeSwitch(client, procedures, entrySize) {
 }
 
 /**
+ * Oracle for decompiler-removed-block.S: the decompiler drops the constant-false
+ * branch target of rea_removed_block, and the dossier must name that block's
+ * range and instructions instead of leaving only a pseudocode comment.
+ */
+export async function verifyDecompilerRemovedBlock(client) {
+  const names = await inventoryCall(client, "list_names", {
+    document: null,
+    address: null,
+  });
+  const removedProcedure = requireProcedure(names, "rea_removed_block");
+  const reachableProcedure = requireProcedure(names, "rea_reachable_block");
+  const removed = await functionCall(client, "analyze_function", {
+    procedure: removedProcedure.address,
+  });
+  const offset = (base, delta) => {
+    const separator = base.lastIndexOf(":");
+    const prefix = separator === -1 ? "" : base.slice(0, separator + 1);
+    const value = BigInt(base.slice(separator + 1)) + BigInt(delta);
+    return `${prefix}0x${value.toString(16)}`;
+  };
+  const start = offset(removed.procedure.address, 0x10);
+  const end = offset(removed.procedure.address, 0x18);
+  const blocks = removed.decompiler_completeness?.removed_blocks;
+  if (
+    blocks?.length !== 1 ||
+    blocks[0].start !== start ||
+    blocks[0].end !== end ||
+    blocks[0].reason !== "unreachable" ||
+    blocks[0].assembly.length !== 2 ||
+    !blocks[0].assembly[0].startsWith(`${start}:`) ||
+    !/0x77\b/iu.test(blocks[0].assembly[0])
+  )
+    throw new Error(
+      `Decompiler-removed block was not reported at ${start}-${end}: ${JSON.stringify(removed.decompiler_completeness)}`,
+    );
+  if (!/Removing unreachable block/u.test(removed.pseudocode))
+    throw new Error(
+      `Ghidra no longer reports the removed block in pseudocode: ${removed.pseudocode}`,
+    );
+  if (/0x77\b/iu.test(removed.pseudocode.replace(/\/\*[\s\S]*?\*\//gu, "")))
+    throw new Error(
+      `Pseudocode still contains the removed block's value: ${removed.pseudocode}`,
+    );
+  if (
+    !removed.limitations.some((limitation) =>
+      limitation.includes("decompiler_completeness.removed_blocks"),
+    )
+  )
+    throw new Error(
+      `Removed-block limitation is missing: ${JSON.stringify(removed.limitations)}`,
+    );
+  const reachable = await functionCall(client, "analyze_function", {
+    procedure: reachableProcedure.address,
+  });
+  if (reachable.decompiler_completeness?.removed_blocks.length !== 0)
+    throw new Error(
+      `Reachable control reported removed blocks: ${JSON.stringify(reachable.decompiler_completeness)}`,
+    );
+  return { removed_block: blocks[0], control_removed_blocks: 0 };
+}
+
+/**
  * Oracle for relative-switch-signed.S: signed halfword byte offsets from a base
  * inside the case bodies, a CBZ route for the zero entry, and a B.CS bound.
  */

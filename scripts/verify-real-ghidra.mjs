@@ -34,6 +34,7 @@ import { completeVerifierRun, createVerifierRun } from "./lib/verifier-run.mjs";
 import { hasTypedSwitchEvidence } from "./verify-real-ghidra-switch-assertions.mjs";
 
 import {
+  verifyDecompilerRemovedBlock,
   verifyDenseDefaultReturn,
   verifyJumpTableDenseSwitch,
   verifyNativeTypeLayout,
@@ -204,6 +205,30 @@ try {
         ]);
       }
     }
+    const removedBlockSource = fileURLToPath(
+      new URL(
+        "../tests/conformance/ghidra/decompiler-removed-block.S",
+        import.meta.url,
+      ),
+    );
+    for (const format of [
+      "elf",
+      ...(expectedNativeTarget.architecture === "arm64" ? ["mach-o"] : []),
+    ]) {
+      const targetPath = join(fixtureRoot, `removed-block-${format}.o`);
+      await exec(clang, [
+        ...(format === "elf" ? ["--target=aarch64-linux-gnu"] : []),
+        "-c",
+        removedBlockSource,
+        "-o",
+        targetPath,
+      ]);
+      crossTargets.push([
+        targetPath,
+        "removed-block",
+        { format, architecture: "arm64" },
+      ]);
+    }
 
     await exec(clang, [
       "--target=aarch64-linux-gnu",
@@ -302,7 +327,11 @@ try {
   const crossResults = [];
   for (const [targetPath, variant, expectedTarget] of crossTargets) {
     const result = await verifyTarget(targetPath, variant, expectedTarget);
-    if (variant !== "aarch64-jump-table" && !variant.startsWith("relative-"))
+    if (
+      variant !== "aarch64-jump-table" &&
+      variant !== "removed-block" &&
+      !variant.startsWith("relative-")
+    )
       assertCrossFixture(result);
     crossResults.push(result);
   }
@@ -331,6 +360,9 @@ try {
       ? (crossResults[0]?.native_api_cli ?? null)
       : jumpTable.native_api_cli,
     native_value_e2e: debug.native_values,
+    decompiler_removed_blocks: crossResults
+      .filter(({ variant }) => variant === "removed-block")
+      .map(({ target, probes }) => ({ format: target.format, ...probes })),
     custom_target: custom === null ? null : summary(custom),
     cleanup: "complete",
   };
@@ -553,30 +585,33 @@ async function verifyTarget(targetPath, variant, expectedTarget = null) {
             client,
           })
         : null;
-    const probes = variant.startsWith("relative-signed-")
-      ? await verifyRelativeSignedSwitch(
-          client,
-          Number(variant.split("-").at(-1)),
-        )
-      : variant.startsWith("relative-")
-        ? await verifyRelativeSwitch(
-            client,
-            procedures,
-            Number(variant.slice(-1)),
-          )
-        : variant === "type-layout"
-          ? await verifyNativeTypeLayout(client, names)
-          : variant === "jump-table"
-            ? await verifyJumpTableDenseSwitch(client, procedures)
-            : variant === "custom" || variant === "aarch64-jump-table"
-              ? null
-              : await verifyInventoryOperations({
-                  client,
-                  variant,
-                  procedures,
-                  names,
-                  strings,
-                });
+    const probes =
+      variant === "removed-block"
+        ? await verifyDecompilerRemovedBlock(client)
+        : variant.startsWith("relative-signed-")
+          ? await verifyRelativeSignedSwitch(
+              client,
+              Number(variant.split("-").at(-1)),
+            )
+          : variant.startsWith("relative-")
+            ? await verifyRelativeSwitch(
+                client,
+                procedures,
+                Number(variant.slice(-1)),
+              )
+            : variant === "type-layout"
+              ? await verifyNativeTypeLayout(client, names)
+              : variant === "jump-table"
+                ? await verifyJumpTableDenseSwitch(client, procedures)
+                : variant === "custom" || variant === "aarch64-jump-table"
+                  ? null
+                  : await verifyInventoryOperations({
+                      client,
+                      variant,
+                      procedures,
+                      names,
+                      strings,
+                    });
     const nativeValues =
       variant === "debug"
         ? await verifyNativeValueTrace(client, procedures, parsedTarget.value)
