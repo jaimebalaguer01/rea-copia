@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { access } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { projectAnalysisError } from "../../../../src/domain/analysisErrorProjection.js";
 import type { HopperStartupDiagnostic } from "../../../../src/domain/hopperStartupFailure.js";
@@ -402,5 +402,30 @@ describe("HopperClient startup failures", () => {
         },
       },
     });
+  });
+});
+
+describe("HopperClient readiness telemetry", () => {
+  it("reports a readiness wait as starting instead of idle", async () => {
+    const client = new HopperClient({
+      launcher: new SilentLauncher(),
+      startupTimeoutMs: 30_000,
+    });
+    clients.push(client);
+    // The silent launcher never creates the bridge socket, so startup stays in
+    // the readiness wait until the deadline. While that wait is outstanding the
+    // session must be able to tell a starting provider from an idle one.
+    const starting = client.start();
+    void starting.catch(() => undefined);
+    await vi.waitFor(() =>
+      expect(client.operationHealth()).toMatchObject({
+        state: "starting",
+        retryAction: "wait",
+        exitCode: null,
+        requests: [],
+      }),
+    );
+    expect(client.isReady()).toBe(false);
+    expect(client.requestActivity()).toBeNull();
   });
 });

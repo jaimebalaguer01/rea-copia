@@ -1,6 +1,7 @@
 /** Caller-visible operational state for one provider bridge. */
 export const PROVIDER_OPERATION_STATES = [
   "idle",
+  "starting",
   "busy",
   "exited",
   "unreachable",
@@ -64,6 +65,7 @@ export const providerRetryAction = (
   if (state === "idle") return null;
   if (startupFailure && state === "exited") return "retry";
   switch (state) {
+    case "starting":
     case "busy":
       return "wait";
     case "exited":
