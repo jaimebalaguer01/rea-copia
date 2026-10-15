@@ -24,6 +24,7 @@ const cleanupError = new ProviderCleanupError(
   "fixture",
   ["fixture-provider-process"],
   { reason: "process exit could not be confirmed" },
+  { remediationAction: "Close the retained fixture process before retrying." },
 );
 
 const primaryError = new AnalysisTimeoutError("read_bytes", 100, {
@@ -111,6 +112,9 @@ describe("one-shot analysis cleanup outcomes", () => {
       code: "cleanup_incomplete",
       category: primary.category,
       message: primary.message,
+      remediation: {
+        action: "Close the retained fixture process before retrying.",
+      },
       details: {
         execution_failure: primary.code,
         captured_output: primary.details?.captured_output,
@@ -190,6 +194,9 @@ describe("managed one-shot cleanup outcomes", () => {
     if (result.ok) return;
     expect(projectAnalysisError(result.error)).toMatchObject({
       code: "cleanup_incomplete",
+      remediation: {
+        action: "Close the retained fixture process before retrying.",
+      },
       details: {
         resources: ["fixture-provider-process"],
         diagnostics: {

@@ -596,18 +596,17 @@ export class BinarySession
 
   /** Describe the active binary session. */
   status(): JsonValue {
+    const client = this.#active?.client ?? this.#pendingCleanup?.client;
     return binarySessionStatus({
       target: this.#active?.target,
       route: this.#currentRoute(),
       router: this.#providerRouter,
       runtimeUnavailability: this.#runtimeUnavailability,
       runId: this.#active?.runId,
-      runtimeLineageSnapshots:
-        this.#active?.client.runtimeLineageSnapshots?.() ?? [],
-      requestActivitySnapshots:
-        this.#active?.client.requestActivitySnapshots?.() ?? [],
-      providerOperationHealth:
-        this.#active?.client.operationHealthSnapshot?.() ?? null,
+      runtimeLineageSnapshots: client?.runtimeLineageSnapshots?.() ?? [],
+      requestActivitySnapshots: client?.requestActivitySnapshots?.() ?? [],
+      providerOperationHealth: client?.operationHealthSnapshot?.() ?? null,
+      cleanupPending: this.#pendingCleanup !== undefined,
     });
   }
 

@@ -451,6 +451,11 @@ The run ends when the process exits, `max_events` entries are recorded,
 Bounded termination reports partial coverage. REA checks process termination
 using a launch-time OS start identity; if ownership or cleanup cannot be
 verified, the result or error preserves that uncertainty. The result reports:
+Launch errors keep the fact that LLDB created a process separate from whether
+it remains alive. An exited `SBProcess` is reported as exited only after LLDB
+confirms that state; unresolved ownership remains retained for cleanup retry.
+Cancellation observed while output and Evidence are finalized returns partial
+cancellation Evidence, even if the target has already exited.
 
 - the outcome, exit status and captured stdout/stderr (1 MiB kept per stream
   while excess bytes are drained and counted without growing capture files).

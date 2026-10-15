@@ -1,7 +1,7 @@
 import { access, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { AnalysisCancelledError } from "../../../../src/domain/analysisErrorCore.js";
@@ -14,6 +14,7 @@ import { err, ok } from "../../../../src/domain/result.js";
 import { NativeCommandFailure } from "../../../../src/native/CommandRunner.js";
 import { NativeMacOSProvider } from "../../../../src/native/NativeMacOSProvider.js";
 import { createDeferred } from "../../../fixtures/binarySession.js";
+import { PrivateRuntimeRoot } from "../../../../src/process/PrivateRuntimeRoot.js";
 import {
   NativeFixtureRunner,
   nativeMachoTarget,
@@ -47,10 +48,43 @@ const request: Parameters<NativeCallTracer["trace"]>[0] = {
 };
 
 const fakeTool = { path: "/usr/bin/lldb", sha256: "b".repeat(64) };
+const successfulTracerOutput = {
+  status: "traced",
+  version: "lldb-fixture",
+  pid: 12345,
+  outcome: "exited",
+  resource_limit_reached: false,
+  target_output: {
+    stdout_bytes: 0,
+    stderr_bytes: 0,
+    stdout_truncated: false,
+    stderr_truncated: false,
+    stdout_complete: true,
+    stderr_complete: true,
+  },
+  exit_status: 0,
+  exit_description: null,
+  killed: false,
+  terminated: true,
+  target_identity: {
+    loaded_image_sha256: null,
+    selected_file_sha256: request.expectedSha256,
+    file_device: "1",
+    file_inode: "2",
+    module_path: request.executable,
+    module_uuid: "fixture",
+    stable: true,
+  },
+  elapsed_ms: 1,
+  breakpoints: [],
+  events: [],
+  other_stops: [],
+};
 const configSchema = z.object({
   result_path: z.string(),
   observation_path: z.string(),
   stdout_capture_path: z.string(),
+  stderr_capture_path: z.string(),
 });
 
 const configFromArguments = async (arguments_: readonly string[]) => {
@@ -116,6 +150,55 @@ const fixtureTracer = (
 };
 
 describe("LLDB failure retention through the production tracer", () => {
+  it.each(["after launch", "during runtime cleanup"])(
+    "returns cancellation when the request is aborted %s",
+    async (phase) => {
+      const controller = new AbortController();
+      const close = PrivateRuntimeRoot.prototype.close;
+      const closeSpy =
+        phase === "during runtime cleanup"
+          ? vi
+              .spyOn(PrivateRuntimeRoot.prototype, "close")
+              .mockImplementation(async function (this: PrivateRuntimeRoot) {
+                await close.call(this);
+                controller.abort();
+              })
+          : undefined;
+      const tracer = new LldbCallTracer(
+        {},
+        async (_executable, arguments_) => {
+          const { config } = await configFromArguments(arguments_);
+          await writeFile(config.observation_path, "");
+          await writeFile(config.stdout_capture_path, "");
+          await writeFile(config.stderr_capture_path, "");
+          await writeFile(
+            config.result_path,
+            JSON.stringify(successfulTracerOutput),
+          );
+          if (phase === "after launch") controller.abort();
+          return {
+            kind: "exited",
+            targetLaunched: false,
+            exitCode: 0,
+            output: "",
+            targetIdentity: undefined,
+            cleanupFailure: undefined,
+          };
+        },
+        async () => ok(fakeTool),
+      );
+
+      const result = await tracer
+        .trace(request, controller.signal)
+        .finally(() => closeSpy?.mockRestore());
+      if (result.ok) throw new Error("expected cancellation after LLDB exit");
+      expect(result.error).toBeInstanceOf(AnalysisCancelledError);
+      expect(result.error.partialObservation).toMatchObject({
+        coverage: { status: "partial", reason: "cancelled" },
+      });
+    },
+  );
+
   it("waits for an active trace before client close removes its runtime root", async () => {
     const launchGate = createDeferred<void>();
     const launchStarted = createDeferred<void>();
@@ -277,6 +360,45 @@ describe("LLDB pre-target phase proof", () => {
 });
 
 describe("LLDB retains ambiguous target ownership", () => {
+  it("releases a launch failure after the bridge proves the process exited", async () => {
+    let configPath: string | undefined;
+    const tracer = new LldbCallTracer(
+      {},
+      async (_executable, arguments_) => {
+        const resolved = await configFromArguments(arguments_);
+        configPath = resolved.configPath;
+        await writeFile(
+          resolved.config.result_path,
+          JSON.stringify({
+            status: "launch-error",
+            error: "attach failed after the launched process exited",
+            target_process_created: true,
+            target_process_exit_observed: true,
+          }),
+        );
+        return {
+          kind: "exited",
+          targetLaunched: true,
+          exitCode: 1,
+          output: "",
+          targetIdentity: undefined,
+          cleanupFailure: undefined,
+        };
+      },
+      async () => ok(fakeTool),
+    );
+
+    const result = await tracer.trace(request);
+    if (result.ok) throw new Error("expected LLDB launch failure");
+    expect(projectAnalysisError(result.error).code).toBe(
+      "capability_unavailable",
+    );
+    expect(result.error.cleanup).toBeUndefined();
+    expect(configPath).toBeDefined();
+    if (configPath !== undefined)
+      await expect(access(dirname(configPath))).rejects.toThrow();
+  });
+
   it("keeps a post-target integrity rejection unresolved when its PID is missing", async () => {
     let runtime: string | undefined;
     const tracer = new LldbCallTracer(

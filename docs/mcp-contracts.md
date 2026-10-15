@@ -402,6 +402,13 @@ is `unavailable` with a reason when ownership could not be revalidated, or
 at that bounded check. These are historical snapshots, not live process
 inventories, and do not claim that no short-lived descendant existed.
 
+`binary_session.cleanup_pending` reports whether the session retains a provider
+client whose cleanup has not succeeded. It can be true with `open: false`;
+target retirement does not establish resource release. Health, activity, and
+lineage remain available from that retained client where the provider supplies
+them. Follow the cleanup error's reported resources and recovery action before
+reopening; a missing health observation does not establish an idle provider.
+
 ## Progress and cancellation
 
 REA accepts ordinary `tools/call` progress tokens. The numeric `progress` counts
@@ -428,6 +435,10 @@ Native call tracing and process capture retain available observations in
 `details.partial_observation` on failure, including when cleanup succeeds.
 The observation reports its partial coverage; cleanup details describe host
 state separately from the execution failure.
+For these tools, cancellation observed during result finalization or owned
+cleanup also returns typed cancellation with the available observations.
+A normal target exit does not establish request completion. Incomplete cleanup
+still takes precedence and retains its resource diagnostics.
 A process capture that fails during a finalization interval keeps every signal
 attempt and its delivery result in `details.partial_observation`, with
 `elapsed_ms` and `exit_code` null when no exit was observed.

@@ -33,6 +33,13 @@ const retryFixture = async (
   });
   const client: AnalysisClient = {
     execute,
+    operationHealthSnapshot: () => ({
+      state: "unreachable",
+      stage: "connection",
+      retryAction: "restart_provider",
+      exitCode: null,
+      requests: [],
+    }),
     close: async (options) => {
       if (!allowed) return err(cleanupError);
       await rm(runtime, { recursive: true, force: true });
@@ -83,6 +90,11 @@ it.each(["close", "switch", "open after close"] as const)(
       transition === "switch" ? await attempt() : await session.close();
     expect(initial).toEqual(err(cleanupError));
     expect(session.activeTarget()).toBeUndefined();
+    expect(session.status()).toMatchObject({
+      open: false,
+      cleanup_pending: true,
+      provider_operation_health: { state: "unreachable", stage: "connection" },
+    });
     expect(await session.execute("address_name", {})).toMatchObject({
       ok: false,
     });
@@ -94,6 +106,7 @@ it.each(["close", "switch", "open after close"] as const)(
 
     fixture.allowCleanup();
     expect((await attempt()).ok).toBe(true);
+    expect(session.status()).toMatchObject({ cleanup_pending: false });
     await expect(access(runtime)).rejects.toMatchObject({ code: "ENOENT" });
     expect(fixture.created()).toBe(transition === "close" ? 1 : 2);
   },
